@@ -7,12 +7,16 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, NavigableString, Tag
 from dateutil import parser as date_parser
 
-from webscraper.models import ReleaseFeature
+from webscraper.models import UNDATED_SENTINEL, ReleaseFeature
 
 WHATS_NEW_TOPIC_ID = "topic_D1C27F9C842A4C6CA27898AFFDB474B7"
 WEBEX_HELP_BASE = "https://help.webex.com"
 DATE_HEADING_PATTERN = re.compile(
     r"^(January|February|March|April|May|June|July|August|September|October|November|December|\d{1,2}\s+\w+|\w+\s+\d{1,2})",
+    re.IGNORECASE,
+)
+MONTH_YEAR_PATTERN = re.compile(
+    r"^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}$",
     re.IGNORECASE,
 )
 
@@ -21,6 +25,14 @@ def parse_release_date(text: str) -> date | None:
     cleaned = re.sub(r"\s+", " ", text.strip())
     if not cleaned or not DATE_HEADING_PATTERN.match(cleaned):
         return None
+
+    month_year = MONTH_YEAR_PATTERN.match(cleaned)
+    if month_year:
+        try:
+            parsed = date_parser.parse(f"{cleaned} 1", fuzzy=False)
+        except (ValueError, OverflowError):
+            return None
+        return parsed.date()
 
     for fmt in ("%B %d, %Y", "%d %B, %Y", "%B %d %Y"):
         try:
@@ -35,18 +47,31 @@ def parse_release_date(text: str) -> date | None:
     return parsed.date()
 
 
-def _scope_whats_new_html(html: str) -> str:
-    start = html.find(f'id="{WHATS_NEW_TOPIC_ID}"')
-    if start < 0:
-        return html
+def _is_tab_pane(element: Tag) -> bool:
+    classes = element.get("class") or []
+    return "tab-pane" in classes
 
-    end_markers = [
-        html.find('id="coming_soon"', start),
-        html.find('Coming soon</a>', start),
-    ]
-    ends = [marker for marker in end_markers if marker >= 0]
-    end = min(ends) if ends else len(html)
-    return html[start:end]
+
+def _iter_tab_panes(html: str) -> list[tuple[str, str]]:
+    """Return tab label and HTML for each top-level tab pane in nav order."""
+    soup = BeautifulSoup(html, "lxml")
+    tabs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    for link in soup.select(".nav-tabs a[href^='#'], ul.nav a[href^='#']"):
+        target_id = link.get("href", "")[1:]
+        if not target_id or target_id in seen:
+            continue
+
+        pane = soup.find(id=target_id)
+        if pane is None or not _is_tab_pane(pane):
+            continue
+
+        seen.add(target_id)
+        tab_name = link.get_text(" ", strip=True) or target_id
+        tabs.append((tab_name, str(pane)))
+
+    return tabs
 
 
 def normalize_link_url(href: str, *, base_url: str = WEBEX_HELP_BASE) -> str:
@@ -178,9 +203,13 @@ def _iter_h2_sections(soup: BeautifulSoup) -> list[tuple[str, Tag | None]]:
     return sections
 
 
-def parse_release_features(html: str, source_url: str) -> list[ReleaseFeature]:
-    scoped_html = _scope_whats_new_html(html)
-    soup = BeautifulSoup(scoped_html, "lxml")
+def _parse_features_from_html(
+    html: str,
+    *,
+    source_url: str,
+    tab_name: str,
+) -> list[ReleaseFeature]:
+    soup = BeautifulSoup(html, "lxml")
     features: list[ReleaseFeature] = []
     current_date: date | None = None
 
@@ -190,18 +219,38 @@ def parse_release_features(html: str, source_url: str) -> list[ReleaseFeature]:
             current_date = release_date
             continue
 
-        if current_date is None:
-            continue
-
+        feature_date = current_date if current_date is not None else UNDATED_SENTINEL
         body_text = _element_text(body_container) if body_container else ""
         features.append(
             ReleaseFeature(
-                release_date=current_date,
+                release_date=feature_date,
                 title=title,
                 body_text=body_text,
                 source_url=source_url,
+                tab_name=tab_name,
                 links=_extract_links(body_container),
             )
         )
 
+    return features
+
+
+def parse_release_features(html: str, source_url: str) -> list[ReleaseFeature]:
+    tabs = _iter_tab_panes(html)
+    if not tabs:
+        return _parse_features_from_html(
+            html,
+            source_url=source_url,
+            tab_name="Release notes",
+        )
+
+    features: list[ReleaseFeature] = []
+    for tab_name, tab_html in tabs:
+        features.extend(
+            _parse_features_from_html(
+                tab_html,
+                source_url=source_url,
+                tab_name=tab_name,
+            )
+        )
     return features

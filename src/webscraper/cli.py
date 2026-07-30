@@ -74,7 +74,11 @@ def main(
     )
 
     if dry_run:
+        current_tab = ""
         for feature in filtered:
+            if feature.tab_name != current_tab:
+                current_tab = feature.tab_name
+                typer.echo(f"[{current_tab}]")
             typer.echo(f"- {feature.release_date.isoformat()} | {feature.title}")
         raise typer.Exit(code=0)
 

@@ -40,7 +40,13 @@ python -m webscraper \
 
 ## Output
 
-Reports are written to `output/webex-cc-admin-updates-{date}-last{days}d.md` by default and include YAML front matter plus AI-generated Markdown summaries grouped by release date.
+Reports are written to `output/webex-cc-admin-updates-{date}-last{days}d.md` by default and include YAML front matter plus Markdown grouped to match the source page:
+
+- `##` tab name (What's new, Coming soon, Limitations, Announcements)
+- `###` release date
+- `####` feature title and summary bullets
+
+When AI summarization succeeds, the model is instructed to preserve this tab → date → feature structure. If AI is unavailable, the fallback report uses the same layout with scraped content.
 
 ## Tests
 

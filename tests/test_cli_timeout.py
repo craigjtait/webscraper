@@ -19,6 +19,7 @@ def test_cli_writes_fallback_report_on_ai_timeout(tmp_path: Path) -> None:
         title="Sample Feature",
         body_text="Sample body.",
         source_url="https://example.com",
+        tab_name="What's new",
         links=(),
     )
     output_path = tmp_path / "report.md"
