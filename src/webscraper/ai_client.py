@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -12,6 +14,8 @@ DEFAULT_TOKEN_URL = "https://id.cisco.com/oauth2/default/v1/token"
 DEFAULT_APP_KEY_HEADER = "api-key"
 DEFAULT_MODEL = "gpt-5-nano"
 DEFAULT_API_VERSION = "2025-04-01-preview"
+DEFAULT_AUTH_MODE = "oauth"
+DEFAULT_TOKEN_AUTH = "basic"
 REQUEST_TIMEOUT = 60.0
 DEPLOYMENTS_PATH = "/openai/deployments"
 
@@ -28,6 +32,9 @@ class AIConfig:
     endpoint: str
     token_url: str = DEFAULT_TOKEN_URL
     app_key_header: str = DEFAULT_APP_KEY_HEADER
+    scope: str = ""
+    auth_mode: str = DEFAULT_AUTH_MODE
+    token_auth: str = DEFAULT_TOKEN_AUTH
 
     @classmethod
     def from_env(cls) -> "AIConfig":
@@ -47,6 +54,16 @@ class AIConfig:
                 + ", ".join(missing)
             )
 
+        auth_mode = os.environ.get("AI_AUTH_MODE", DEFAULT_AUTH_MODE)
+        if auth_mode not in {"oauth", "bearer_app_key", "api_key_only"}:
+            raise RuntimeError(
+                "AI_AUTH_MODE must be one of: oauth, bearer_app_key, api_key_only"
+            )
+
+        token_auth = os.environ.get("AI_TOKEN_AUTH", DEFAULT_TOKEN_AUTH)
+        if token_auth not in {"basic", "body"}:
+            raise RuntimeError("AI_TOKEN_AUTH must be one of: basic, body")
+
         return cls(
             client_id=os.environ["AI_CLIENT_ID"],
             client_secret=os.environ["AI_CLIENT_SECRET"],
@@ -56,6 +73,9 @@ class AIConfig:
             endpoint=os.environ["AI_ENDPOINT"].rstrip("/"),
             token_url=os.environ.get("AI_TOKEN_URL", DEFAULT_TOKEN_URL),
             app_key_header=os.environ.get("AI_APP_KEY_HEADER", DEFAULT_APP_KEY_HEADER),
+            scope=os.environ.get("AI_SCOPE", "").strip(),
+            auth_mode=auth_mode,
+            token_auth=token_auth,
         )
 
     def chat_completions_url(self) -> str:
@@ -107,7 +127,46 @@ def _ensure_api_version(url: str, api_version: str) -> str:
 
 
 def _cache_key(config: AIConfig) -> str:
-    return f"{config.token_url}:{config.client_id}"
+    return f"{config.token_url}:{config.client_id}:{config.scope}:{config.token_auth}"
+
+
+def _basic_auth_header(client_id: str, client_secret: str) -> str:
+    encoded = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def _token_request_data(config: AIConfig) -> Dict[str, str]:
+    data = {"grant_type": "client_credentials"}
+    if config.scope:
+        data["scope"] = config.scope
+    if config.token_auth == "body":
+        data["client_id"] = config.client_id
+        data["client_secret"] = config.client_secret
+    return data
+
+
+def _token_request_headers(config: AIConfig) -> Dict[str, str]:
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    if config.token_auth == "basic":
+        headers["Authorization"] = _basic_auth_header(config.client_id, config.client_secret)
+    return headers
+
+
+def decode_jwt_claims(token: str) -> Dict[str, object]:
+    """Decode JWT payload without verification for troubleshooting."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        return json.loads(decoded)
+    except (ValueError, json.JSONDecodeError, IndexError):
+        return {}
 
 
 def get_access_token(
@@ -124,12 +183,8 @@ def get_access_token(
     try:
         response = http.post(
             config.token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": config.client_id,
-                "client_secret": config.client_secret,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data=_token_request_data(config),
+            headers=_token_request_headers(config),
         )
         response.raise_for_status()
         payload = response.json()
@@ -148,29 +203,58 @@ def get_access_token(
     return token
 
 
-def _request_headers(config: AIConfig, token: str) -> dict[str, str]:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    if config.app_key:
+def _request_headers(config: AIConfig, token: Optional[str]) -> Dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+
+    if config.auth_mode == "oauth":
+        if not token:
+            raise RuntimeError("OAuth access token is required for AI_AUTH_MODE=oauth")
+        headers["Authorization"] = f"Bearer {token}"
+        if config.app_key:
+            headers[config.app_key_header] = config.app_key
+        return headers
+
+    if config.auth_mode == "bearer_app_key":
+        headers["Authorization"] = f"Bearer {config.app_key}"
+        return headers
+
+    if config.auth_mode == "api_key_only":
         headers[config.app_key_header] = config.app_key
-    return headers
+        return headers
+
+    raise RuntimeError(f"Unsupported auth mode: {config.auth_mode}")
 
 
-def _http_error(message: str, exc: httpx.HTTPError) -> RuntimeError:
+def _jwt_debug_suffix(token: Optional[str]) -> str:
+    if not token:
+        return ""
+    claims = decode_jwt_claims(token)
+    if not claims:
+        return ""
+    interesting = {
+        key: claims.get(key)
+        for key in ("iss", "aud", "scope", "scp", "sub", "client_id", "exp")
+        if key in claims
+    }
+    if not interesting:
+        return ""
+    return f" Token claims: {interesting}"
+
+
+def _http_error(message: str, exc: httpx.HTTPError, *, bearer_token: Optional[str] = None) -> RuntimeError:
     if isinstance(exc, httpx.HTTPStatusError):
         response = exc.response
         detail = response.text.strip()
+        suffix = ""
+        if response.status_code == 401 and "jwt" in detail.lower():
+            suffix = _jwt_debug_suffix(bearer_token)
         if detail:
-            return RuntimeError(
-                f"{message}: {exc} Response body: {detail[:500]}"
-            )
+            return RuntimeError(f"{message}: {exc} Response body: {detail[:500]}{suffix}")
     return RuntimeError(f"{message}: {exc}")
 
 
 def chat_completion(
-    messages: list[dict[str, str]],
+    messages: List[Dict[str, str]],
     *,
     config: Optional[AIConfig] = None,
     temperature: float = 0.2,
@@ -178,8 +262,10 @@ def chat_completion(
     ai_config = config or AIConfig.from_env()
     owns_client = True
     http = httpx.Client(timeout=REQUEST_TIMEOUT)
+    token: Optional[str] = None
     try:
-        token = get_access_token(ai_config, client=http)
+        if ai_config.auth_mode == "oauth":
+            token = get_access_token(ai_config, client=http)
         response = http.post(
             ai_config.chat_completions_url(),
             headers=_request_headers(ai_config, token),
@@ -191,7 +277,11 @@ def chat_completion(
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
-        raise _http_error("AI chat completion request failed", exc) from exc
+        raise _http_error(
+            "AI chat completion request failed",
+            exc,
+            bearer_token=token,
+        ) from exc
     finally:
         if owns_client:
             http.close()

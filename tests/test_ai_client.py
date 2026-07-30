@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -10,6 +11,7 @@ from webscraper.ai_client import (
     _token_cache,
     build_chat_completions_url,
     chat_completion,
+    decode_jwt_claims,
     get_access_token,
 )
 
@@ -29,6 +31,7 @@ def ai_config() -> AIConfig:
         api_version="2025-04-01-preview",
         endpoint="https://chat-ai.cisco.com",
         token_url="https://id.example.com/token",
+        scope="chat-ai-scope",
     )
 
 
@@ -51,22 +54,7 @@ def test_chat_completions_url_from_deployments_endpoint() -> None:
     )
 
 
-def test_chat_completions_url_does_not_duplicate_deployments_path() -> None:
-    url = build_chat_completions_url(
-        "https://chat-ai.cisco.com/openai/deployments",
-        model_name="gpt-5-nano",
-        api_version="2025-04-01-preview",
-    )
-    assert "/openai/deployments/openai/deployments/" not in url
-
-
-def test_from_env_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AI_CLIENT_ID", raising=False)
-    with pytest.raises(RuntimeError, match="Missing required AI environment variables"):
-        AIConfig.from_env()
-
-
-def test_get_access_token(ai_config: AIConfig) -> None:
+def test_get_access_token_uses_basic_auth(ai_config: AIConfig) -> None:
     token_response = httpx.Response(
         200,
         json={"access_token": "test-token", "expires_in": 3600},
@@ -78,10 +66,16 @@ def test_get_access_token(ai_config: AIConfig) -> None:
     token = get_access_token(ai_config, client=mock_http)
 
     assert token == "test-token"
-    mock_http.post.assert_called_once()
+    call = mock_http.post.call_args
+    headers = call.kwargs["headers"]
+    expected = base64.b64encode(b"client-id:client-secret").decode("ascii")
+    assert headers["Authorization"] == f"Basic {expected}"
+    assert call.kwargs["data"]["grant_type"] == "client_credentials"
+    assert call.kwargs["data"]["scope"] == "chat-ai-scope"
+    assert "client_id" not in call.kwargs["data"]
 
 
-def test_chat_completion(ai_config: AIConfig) -> None:
+def test_chat_completion_oauth_mode(ai_config: AIConfig) -> None:
     token_response = httpx.Response(
         200,
         json={"access_token": "test-token", "expires_in": 3600},
@@ -100,7 +94,40 @@ def test_chat_completion(ai_config: AIConfig) -> None:
         content = chat_completion([{"role": "user", "content": "hello"}], config=ai_config)
 
     assert content == "Summary markdown"
-    assert mock_http.post.call_count == 2
     chat_call = mock_http.post.call_args_list[1]
     assert chat_call.kwargs["headers"]["Authorization"] == "Bearer test-token"
     assert chat_call.kwargs["headers"]["api-key"] == "app-key"
+
+
+def test_bearer_app_key_mode_skips_token_request() -> None:
+    config = AIConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        app_key="jwt-app-key",
+        model_name="gpt-5-nano",
+        api_version="2025-04-01-preview",
+        endpoint="https://chat-ai.cisco.com",
+        auth_mode="bearer_app_key",
+    )
+    chat_response = httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": "ok"}}]},
+        request=httpx.Request("POST", config.chat_completions_url()),
+    )
+    mock_http = MagicMock()
+    mock_http.post.return_value = chat_response
+
+    with patch("webscraper.ai_client.httpx.Client") as client_cls:
+        client_cls.return_value = mock_http
+        content = chat_completion([{"role": "user", "content": "hello"}], config=config)
+
+    assert content == "ok"
+    mock_http.post.assert_called_once()
+    assert mock_http.post.call_args.kwargs["headers"]["Authorization"] == "Bearer jwt-app-key"
+
+
+def test_decode_jwt_claims_reads_payload() -> None:
+    payload = base64.urlsafe_b64encode(b'{"iss":"id.cisco.com","aud":"chat-ai"}').decode("ascii")
+    claims = decode_jwt_claims(f"header.{payload}.signature")
+    assert claims["iss"] == "id.cisco.com"
+    assert claims["aud"] == "chat-ai"

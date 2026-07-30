@@ -64,12 +64,20 @@ pytest -m integration
 | `AI_ENDPOINT` | Yes | AI gateway base URL (e.g. `https://chat-ai.cisco.com`) |
 | `AI_MODEL_NAME` | No | Deployment/model name (default: `gpt-5-nano`) |
 | `AI_API_VERSION` | No | Azure-style API version (default: `2025-04-01-preview`) |
+| `AI_SCOPE` | No | OAuth scope for chat-ai (set from API Console app registration) |
+| `AI_AUTH_MODE` | No | `oauth` (default), `bearer_app_key`, or `api_key_only` |
+| `AI_TOKEN_AUTH` | No | Token request style: `basic` (default) or `body` |
 | `AI_TOKEN_URL` | No | OAuth token endpoint (default: Cisco `id.cisco.com`) |
 | `AI_APP_KEY_HEADER` | No | Header name for `AI_APP_KEY` (default: `api-key`) |
 
-Authentication flow:
+Authentication flow (`AI_AUTH_MODE=oauth`, default):
 
-1. Exchange `AI_CLIENT_ID` / `AI_CLIENT_SECRET` for a Bearer token via OAuth client credentials.
-2. Call `{AI_ENDPOINT}/openai/deployments/{AI_MODEL_NAME}/chat/completions?api-version={AI_API_VERSION}` with the Bearer token and `api-key` header.
+1. Request an access token from `AI_TOKEN_URL` using client credentials.
+   Cisco API Console recommends HTTP Basic auth (`AI_TOKEN_AUTH=basic`) and an `AI_SCOPE` tied to your chat-ai app registration.
+2. Call `{AI_ENDPOINT}/openai/deployments/{AI_MODEL_NAME}/chat/completions?api-version={AI_API_VERSION}` with:
+   - `Authorization: Bearer {access_token}`
+   - `{AI_APP_KEY_HEADER}: {AI_APP_KEY}`
+
+If you get `steps.jwt.InvalidToken`, verify `AI_SCOPE` matches your API Console registration and try `AI_AUTH_MODE=bearer_app_key` if your app key is itself the bearer token.
 
 `AI_ENDPOINT` can be either the gateway base URL (`https://chat-ai.cisco.com`) or a path ending in `/openai/deployments`; the client avoids duplicating path segments.
