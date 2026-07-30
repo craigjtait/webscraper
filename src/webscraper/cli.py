@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 import typer
 from dotenv import load_dotenv
@@ -19,7 +18,7 @@ DEFAULT_URL = (
 app = typer.Typer(add_completion=False, help="Scrape Webex release notes and summarize with AI.")
 
 
-def _parse_as_of(value: str | None) -> date:
+def _parse_as_of(value: Optional[str]) -> date:
     if not value:
         return date.today()
     return date.fromisoformat(value)
@@ -33,17 +32,17 @@ def _default_output_path(*, as_of: date, days: int) -> Path:
 def main(
     url: str = typer.Option(DEFAULT_URL, "--url", help="Webex help article URL to scrape."),
     days: int = typer.Option(30, "--days", min=1, help="Lookback window in days."),
-    as_of: str | None = typer.Option(
+    as_of: Optional[str] = typer.Option(
         None,
         "--as-of",
         help="Reference date (YYYY-MM-DD). Defaults to today.",
     ),
-    output: Path | None = typer.Option(
+    output: Optional[Path] = typer.Option(
         None,
         "--output",
         help="Output markdown file path.",
     ),
-    cache_dir: Path | None = typer.Option(
+    cache_dir: Optional[Path] = typer.Option(
         None,
         "--cache-dir",
         help="Optional directory to cache fetched page HTML.",
