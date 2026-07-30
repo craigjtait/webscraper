@@ -19,6 +19,9 @@ def _build_prompt(features: list[ReleaseFeature], *, days: int, as_of: date) -> 
         "- Use Markdown headings: ## for dates, ### for feature titles.",
         "- Provide 1-3 concise bullet points per feature.",
         "- Consolidate duplicate themes without losing distinct capabilities.",
+        "- Preserve source URLs as Markdown links [label](url) in the summary.",
+        "- When LINKS are listed for a feature, embed the relevant ones inline in bullets.",
+        "- Do not invent URLs; only use links provided in BODY or LINKS.",
         "- Output valid Markdown only. Do not include YAML front matter or preamble.",
         "",
         "Release notes:",
@@ -33,9 +36,12 @@ def _build_prompt(features: list[ReleaseFeature], *, days: int, as_of: date) -> 
                 f"DATE: {feature.release_date.isoformat()}",
                 f"TITLE: {feature.title}",
                 f"BODY:\n{body}",
-                "---",
             ]
         )
+        if feature.links:
+            link_lines = [f"- [{label}]({url})" for label, url in feature.links]
+            lines.append("LINKS:\n" + "\n".join(link_lines))
+        lines.append("---")
     return "\n".join(lines)
 
 

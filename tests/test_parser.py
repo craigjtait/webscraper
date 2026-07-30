@@ -32,6 +32,20 @@ def test_parse_release_features_from_fixture(fixture_html: str) -> None:
     assert features[2].release_date == date(2026, 7, 10)
 
 
+def test_parse_release_features_extracts_markdown_links(fixture_html: str) -> None:
+    features = parse_release_features(fixture_html, source_url="https://example.com")
+    call_control = next(feature for feature in features if feature.title == "Enhancing Call Control")
+
+    assert "[Manage your calls in Agent Desktop]" in call_control.body_text
+    assert "help.webex.com/en-us/article/mmcf7p" in call_control.body_text
+    assert call_control.links == (
+        (
+            "Manage your calls in Agent Desktop",
+            "https://help.webex.com/en-us/article/mmcf7p/Manage-your-calls-in-Agent-Desktop",
+        ),
+    )
+
+
 def test_filter_by_lookback_seven_days(fixture_html: str) -> None:
     features = parse_release_features(fixture_html, source_url="https://example.com")
     filtered = filter_by_lookback(features, days=7, as_of=date(2026, 7, 30))

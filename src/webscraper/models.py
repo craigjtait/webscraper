@@ -8,3 +8,4 @@ class ReleaseFeature:
     title: str
     body_text: str
     source_url: str
+    links: tuple[tuple[str, str], ...] = ()
