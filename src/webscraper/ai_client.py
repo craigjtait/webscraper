@@ -3,14 +3,17 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
 DEFAULT_TOKEN_URL = "https://id.cisco.com/oauth2/default/v1/token"
-DEFAULT_APP_KEY_HEADER = "Ocp-Apim-Subscription-Key"
+DEFAULT_APP_KEY_HEADER = "api-key"
 DEFAULT_MODEL = "gpt-5-nano"
 DEFAULT_API_VERSION = "2025-04-01-preview"
 REQUEST_TIMEOUT = 60.0
+DEPLOYMENTS_PATH = "/openai/deployments"
 
 _token_cache: dict[str, tuple[str, float]] = {}
 
@@ -27,7 +30,7 @@ class AIConfig:
     app_key_header: str = DEFAULT_APP_KEY_HEADER
 
     @classmethod
-    def from_env(cls) -> AIConfig:
+    def from_env(cls) -> "AIConfig":
         missing = [
             name
             for name, value in {
@@ -56,17 +59,62 @@ class AIConfig:
         )
 
     def chat_completions_url(self) -> str:
-        return (
-            f"{self.endpoint}/openai/deployments/{self.model_name}/chat/completions"
-            f"?api-version={self.api_version}"
+        return build_chat_completions_url(
+            self.endpoint,
+            model_name=self.model_name,
+            api_version=self.api_version,
         )
+
+
+def build_chat_completions_url(
+    endpoint: str,
+    *,
+    model_name: str,
+    api_version: str,
+) -> str:
+    """Build an Azure OpenAI-style chat completions URL without duplicating path segments."""
+    normalized = endpoint.rstrip("/")
+
+    if normalized.endswith("/chat/completions"):
+        return _ensure_api_version(normalized, api_version)
+
+    if normalized.endswith(DEPLOYMENTS_PATH):
+        return (
+            f"{normalized}/{model_name}/chat/completions"
+            f"?api-version={api_version}"
+        )
+
+    deployment_prefix = f"{DEPLOYMENTS_PATH}/{model_name}"
+    if deployment_prefix in normalized:
+        if normalized.endswith(deployment_prefix):
+            return (
+                f"{normalized}/chat/completions"
+                f"?api-version={api_version}"
+            )
+        return _ensure_api_version(f"{normalized}/chat/completions", api_version)
+
+    return (
+        f"{normalized}{DEPLOYMENTS_PATH}/{model_name}/chat/completions"
+        f"?api-version={api_version}"
+    )
+
+
+def _ensure_api_version(url: str, api_version: str) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["api-version"] = api_version
+    return urlunparse(parsed._replace(query=urlencode(query)))
 
 
 def _cache_key(config: AIConfig) -> str:
     return f"{config.token_url}:{config.client_id}"
 
 
-def get_access_token(config: AIConfig, *, client: httpx.Client | None = None) -> str:
+def get_access_token(
+    config: AIConfig,
+    *,
+    client: Optional[httpx.Client] = None,
+) -> str:
     cache_entry = _token_cache.get(_cache_key(config))
     if cache_entry and cache_entry[1] > time.time():
         return cache_entry[0]
@@ -86,7 +134,7 @@ def get_access_token(config: AIConfig, *, client: httpx.Client | None = None) ->
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
-        raise RuntimeError(f"Failed to obtain AI access token: {exc}") from exc
+        raise _http_error("Failed to obtain AI access token", exc) from exc
     finally:
         if owns_client:
             http.close()
@@ -100,10 +148,31 @@ def get_access_token(config: AIConfig, *, client: httpx.Client | None = None) ->
     return token
 
 
+def _request_headers(config: AIConfig, token: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    if config.app_key:
+        headers[config.app_key_header] = config.app_key
+    return headers
+
+
+def _http_error(message: str, exc: httpx.HTTPError) -> RuntimeError:
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        detail = response.text.strip()
+        if detail:
+            return RuntimeError(
+                f"{message}: {exc} Response body: {detail[:500]}"
+            )
+    return RuntimeError(f"{message}: {exc}")
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     *,
-    config: AIConfig | None = None,
+    config: Optional[AIConfig] = None,
     temperature: float = 0.2,
 ) -> str:
     ai_config = config or AIConfig.from_env()
@@ -113,11 +182,7 @@ def chat_completion(
         token = get_access_token(ai_config, client=http)
         response = http.post(
             ai_config.chat_completions_url(),
-            headers={
-                "Authorization": f"Bearer {token}",
-                ai_config.app_key_header: ai_config.app_key,
-                "Content-Type": "application/json",
-            },
+            headers=_request_headers(ai_config, token),
             json={
                 "messages": messages,
                 "temperature": temperature,
@@ -126,7 +191,7 @@ def chat_completion(
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
-        raise RuntimeError(f"AI chat completion request failed: {exc}") from exc
+        raise _http_error("AI chat completion request failed", exc) from exc
     finally:
         if owns_client:
             http.close()

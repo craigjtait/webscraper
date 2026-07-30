@@ -8,6 +8,7 @@ import pytest
 from webscraper.ai_client import (
     AIConfig,
     _token_cache,
+    build_chat_completions_url,
     chat_completion,
     get_access_token,
 )
@@ -26,16 +27,37 @@ def ai_config() -> AIConfig:
         app_key="app-key",
         model_name="gpt-5-nano",
         api_version="2025-04-01-preview",
-        endpoint="https://gateway.example.com",
+        endpoint="https://chat-ai.cisco.com",
         token_url="https://id.example.com/token",
     )
 
 
-def test_chat_completions_url(ai_config: AIConfig) -> None:
+def test_chat_completions_url_from_base_endpoint(ai_config: AIConfig) -> None:
     assert ai_config.chat_completions_url() == (
-        "https://gateway.example.com/openai/deployments/gpt-5-nano/chat/completions"
+        "https://chat-ai.cisco.com/openai/deployments/gpt-5-nano/chat/completions"
         "?api-version=2025-04-01-preview"
     )
+
+
+def test_chat_completions_url_from_deployments_endpoint() -> None:
+    url = build_chat_completions_url(
+        "https://chat-ai.cisco.com/openai/deployments",
+        model_name="gpt-5-nano",
+        api_version="2025-04-01-preview",
+    )
+    assert url == (
+        "https://chat-ai.cisco.com/openai/deployments/gpt-5-nano/chat/completions"
+        "?api-version=2025-04-01-preview"
+    )
+
+
+def test_chat_completions_url_does_not_duplicate_deployments_path() -> None:
+    url = build_chat_completions_url(
+        "https://chat-ai.cisco.com/openai/deployments",
+        model_name="gpt-5-nano",
+        api_version="2025-04-01-preview",
+    )
+    assert "/openai/deployments/openai/deployments/" not in url
 
 
 def test_from_env_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,4 +103,4 @@ def test_chat_completion(ai_config: AIConfig) -> None:
     assert mock_http.post.call_count == 2
     chat_call = mock_http.post.call_args_list[1]
     assert chat_call.kwargs["headers"]["Authorization"] == "Bearer test-token"
-    assert chat_call.kwargs["headers"]["Ocp-Apim-Subscription-Key"] == "app-key"
+    assert chat_call.kwargs["headers"]["api-key"] == "app-key"

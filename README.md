@@ -60,14 +60,16 @@ pytest -m integration
 |----------|----------|-------------|
 | `AI_CLIENT_ID` | Yes | OAuth client ID for token acquisition |
 | `AI_CLIENT_SECRET` | Yes | OAuth client secret |
-| `AI_APP_KEY` | Yes | Gateway subscription/app key (sent as `Ocp-Apim-Subscription-Key` by default) |
-| `AI_ENDPOINT` | Yes | AI gateway base URL (e.g. `https://your-gateway.example.com`) |
+| `AI_APP_KEY` | Yes | Gateway API key (sent as `api-key` header by default) |
+| `AI_ENDPOINT` | Yes | AI gateway base URL (e.g. `https://chat-ai.cisco.com`) |
 | `AI_MODEL_NAME` | No | Deployment/model name (default: `gpt-5-nano`) |
 | `AI_API_VERSION` | No | Azure-style API version (default: `2025-04-01-preview`) |
 | `AI_TOKEN_URL` | No | OAuth token endpoint (default: Cisco `id.cisco.com`) |
-| `AI_APP_KEY_HEADER` | No | Header name for `AI_APP_KEY` (default: `Ocp-Apim-Subscription-Key`) |
+| `AI_APP_KEY_HEADER` | No | Header name for `AI_APP_KEY` (default: `api-key`) |
 
 Authentication flow:
 
 1. Exchange `AI_CLIENT_ID` / `AI_CLIENT_SECRET` for a Bearer token via OAuth client credentials.
-2. Call `{AI_ENDPOINT}/openai/deployments/{AI_MODEL_NAME}/chat/completions?api-version={AI_API_VERSION}` with the Bearer token and app key header.
+2. Call `{AI_ENDPOINT}/openai/deployments/{AI_MODEL_NAME}/chat/completions?api-version={AI_API_VERSION}` with the Bearer token and `api-key` header.
+
+`AI_ENDPOINT` can be either the gateway base URL (`https://chat-ai.cisco.com`) or a path ending in `/openai/deployments`; the client avoids duplicating path segments.
