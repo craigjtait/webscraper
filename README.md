@@ -11,7 +11,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env` before running summarization.
+Set the AI credentials in `.env` before running summarization (see `.env.example`).
 
 ## Usage
 
@@ -56,8 +56,18 @@ pytest -m integration
 
 ## Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `OPENAI_API_KEY` | API key for summarization |
-| `OPENAI_MODEL` | Model name (default: `gpt-4o-mini`) |
-| `OPENAI_BASE_URL` | Optional OpenAI-compatible endpoint |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AI_CLIENT_ID` | Yes | OAuth client ID for token acquisition |
+| `AI_CLIENT_SECRET` | Yes | OAuth client secret |
+| `AI_APP_KEY` | Yes | Gateway subscription/app key (sent as `Ocp-Apim-Subscription-Key` by default) |
+| `AI_ENDPOINT` | Yes | AI gateway base URL (e.g. `https://your-gateway.example.com`) |
+| `AI_MODEL_NAME` | No | Deployment/model name (default: `gpt-5-nano`) |
+| `AI_API_VERSION` | No | Azure-style API version (default: `2025-04-01-preview`) |
+| `AI_TOKEN_URL` | No | OAuth token endpoint (default: Cisco `id.cisco.com`) |
+| `AI_APP_KEY_HEADER` | No | Header name for `AI_APP_KEY` (default: `Ocp-Apim-Subscription-Key`) |
+
+Authentication flow:
+
+1. Exchange `AI_CLIENT_ID` / `AI_CLIENT_SECRET` for a Bearer token via OAuth client credentials.
+2. Call `{AI_ENDPOINT}/openai/deployments/{AI_MODEL_NAME}/chat/completions?api-version={AI_API_VERSION}` with the Bearer token and app key header.

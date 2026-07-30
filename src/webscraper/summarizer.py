@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from openai import OpenAI
-
+from webscraper.ai_client import AIConfig, chat_completion
 from webscraper.filter import date_range_label
 from webscraper.models import ReleaseFeature
 
-DEFAULT_MODEL = "gpt-4o-mini"
 MAX_BODY_CHARS = 4000
 
 
@@ -48,19 +45,14 @@ def summarize_features(
     days: int,
     as_of: date,
     source_url: str,
-    model: str | None = None,
+    ai_config: AIConfig | None = None,
 ) -> str:
     if not features:
         return _empty_report(days=days, as_of=as_of, source_url=source_url)
 
-    client = OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        base_url=os.environ.get("OPENAI_BASE_URL") or None,
-    )
-    chosen_model = model or os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
-    response = client.chat.completions.create(
-        model=chosen_model,
-        messages=[
+    config = ai_config or AIConfig.from_env()
+    summary = chat_completion(
+        [
             {
                 "role": "system",
                 "content": (
@@ -70,15 +62,15 @@ def summarize_features(
             },
             {"role": "user", "content": _build_prompt(features, days=days, as_of=as_of)},
         ],
-        temperature=0.2,
+        config=config,
     )
-    summary = response.choices[0].message.content or ""
     return build_markdown_report(
         summary.strip(),
         features=features,
         days=days,
         as_of=as_of,
         source_url=source_url,
+        model_name=config.model_name,
     )
 
 
@@ -89,22 +81,23 @@ def build_markdown_report(
     days: int,
     as_of: date,
     source_url: str,
+    model_name: str | None = None,
 ) -> str:
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    front_matter = "\n".join(
-        [
-            "---",
-            "title: Webex Contact Center Admin Updates",
-            f"source: {source_url}",
-            f"lookback_days: {days}",
-            f"as_of: {as_of.isoformat()}",
-            f"date_range: {date_range_label(features, days=days, as_of=as_of)}",
-            f"generated_at: {generated_at}",
-            f"feature_count: {len(features)}",
-            "---",
-            "",
-        ]
-    )
+    front_matter_lines = [
+        "---",
+        "title: Webex Contact Center Admin Updates",
+        f"source: {source_url}",
+        f"lookback_days: {days}",
+        f"as_of: {as_of.isoformat()}",
+        f"date_range: {date_range_label(features, days=days, as_of=as_of)}",
+        f"generated_at: {generated_at}",
+        f"feature_count: {len(features)}",
+    ]
+    if model_name:
+        front_matter_lines.append(f"ai_model: {model_name}")
+    front_matter_lines.extend(["---", ""])
+    front_matter = "\n".join(front_matter_lines)
     heading = f"# Webex Contact Center Admin Updates — Last {days} Days (as of {as_of.strftime('%B %d, %Y')})"
     return f"{front_matter}{heading}\n\n{body.strip()}\n"
 
