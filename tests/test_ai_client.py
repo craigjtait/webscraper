@@ -7,11 +7,13 @@ import httpx
 import pytest
 
 from webscraper.ai_client import (
+    AITimeoutError,
     AIConfig,
     _token_cache,
     build_chat_completions_url,
     chat_completion,
     get_access_token,
+    request_timeout_seconds,
 )
 
 
@@ -107,3 +109,29 @@ def test_from_env_accepts_circuit_aliases(monkeypatch: pytest.MonkeyPatch) -> No
     config = AIConfig.from_env()
     assert config.client_id == "cid"
     assert config.app_key == "appkey"
+
+
+def test_request_timeout_seconds_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("CIRCUIT_TIMEOUT_SECONDS", raising=False)
+    assert request_timeout_seconds() == 120.0
+
+
+def test_request_timeout_seconds_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_TIMEOUT_SECONDS", "90")
+    assert request_timeout_seconds() == 90.0
+
+
+def test_chat_completion_timeout_raises_aitimeout_error(ai_config: AIConfig) -> None:
+    token_response = httpx.Response(
+        200,
+        json={"access_token": "oauth-token", "expires_in": 3600},
+        request=httpx.Request("POST", ai_config.token_url),
+    )
+    mock_http = MagicMock()
+    mock_http.post.side_effect = [token_response, httpx.ReadTimeout("The read operation timed out")]
+
+    with patch("webscraper.ai_client.httpx.Client") as client_cls:
+        client_cls.return_value = mock_http
+        with pytest.raises(AITimeoutError, match="did not respond in time"):
+            chat_completion([{"role": "user", "content": "hello"}], config=ai_config)

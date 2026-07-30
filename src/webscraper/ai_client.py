@@ -14,8 +14,26 @@ DEFAULT_TOKEN_URL = "https://id.cisco.com/oauth2/default/v1/token"
 DEFAULT_CHAT_BASE_URL = "https://chat-ai.cisco.com/openai/deployments"
 DEFAULT_MODEL = "gpt-5-nano"
 DEFAULT_API_VERSION = "2025-04-01-preview"
-REQUEST_TIMEOUT = 60.0
+DEFAULT_REQUEST_TIMEOUT = 120.0
 DEPLOYMENTS_PATH = "/openai/deployments"
+
+
+class AIServiceError(RuntimeError):
+    """Raised when the AI service cannot complete a request."""
+
+
+class AITimeoutError(AIServiceError):
+    """Raised when the AI service does not respond within the configured timeout."""
+
+
+def request_timeout_seconds() -> float:
+    raw = _env("AI_TIMEOUT_SECONDS", "CIRCUIT_TIMEOUT_SECONDS")
+    if not raw:
+        return DEFAULT_REQUEST_TIMEOUT
+    try:
+        return max(float(raw), 1.0)
+    except ValueError:
+        return DEFAULT_REQUEST_TIMEOUT
 
 _token_cache: dict[str, tuple[str, float]] = {}
 
@@ -140,7 +158,7 @@ def get_access_token(
         return cache_entry[0]
 
     owns_client = client is None
-    http = client or httpx.Client(timeout=REQUEST_TIMEOUT)
+    http = client or httpx.Client(timeout=request_timeout_seconds())
     try:
         token, error, expires_in = _fetch_access_token(config, http)
     finally:
@@ -225,7 +243,8 @@ def chat_completion(
 ) -> str:
     ai_config = config or AIConfig.from_env()
     owns_client = True
-    http = httpx.Client(timeout=REQUEST_TIMEOUT)
+    timeout = request_timeout_seconds()
+    http = httpx.Client(timeout=timeout)
     try:
         access_token = get_access_token(ai_config, client=http)
         response = http.post(
@@ -234,13 +253,18 @@ def chat_completion(
             json=_chat_payload(messages, app_key=ai_config.app_key),
         )
         if response.status_code != 200:
-            raise RuntimeError(
-                f"AI chat completion request failed: HTTP {response.status_code}: "
-                f"{response.text[:4000]}"
+            raise AIServiceError(
+                f"HTTP {response.status_code}: {response.text[:4000]}"
             )
         payload = response.json()
+    except httpx.TimeoutException as exc:
+        raise AITimeoutError(
+            "The AI service did not respond in time "
+            f"(timeout: {timeout:.0f}s). "
+            "Try increasing AI_TIMEOUT_SECONDS or retry later."
+        ) from exc
     except httpx.HTTPError as exc:
-        raise RuntimeError(f"AI chat completion request failed: {exc}") from exc
+        raise AIServiceError(f"AI chat completion request failed: {exc}") from exc
     finally:
         if owns_client:
             http.close()
@@ -248,6 +272,6 @@ def chat_completion(
     try:
         return payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(
+        raise AIServiceError(
             f"Unexpected AI response format ({exc}): {json.dumps(payload)[:2000]}"
         ) from exc

@@ -66,6 +66,7 @@ pytest -m integration
 | `AI_API_VERSION` | No | API version (default: `2025-04-01-preview`) |
 | `AI_SCOPE` | No | OAuth scope (`CIRCUIT_OAUTH_SCOPE` alias supported) |
 | `AI_TOKEN_URL` | No | OAuth token endpoint (default: Cisco `id.cisco.com`) |
+| `AI_TIMEOUT_SECONDS` | No | HTTP timeout for AI requests in seconds (default: `120`) |
 
 `AI_*` variables accept `CIRCUIT_*` aliases for compatibility with pamBot.
 
@@ -77,3 +78,7 @@ Authentication flow (matches Cisco Circuit / chat-ai.cisco.com):
    - JSON body including `"user": "{\"appkey\": \"...\"}"` using `AI_APP_KEY`
 
 `AI_ENDPOINT` is still accepted as an alias for `AI_CHAT_BASE_URL`.
+
+If the AI service times out or is otherwise unavailable, the CLI writes a fallback
+markdown report listing the scraped release notes (with links preserved) instead of
+exiting with a traceback.

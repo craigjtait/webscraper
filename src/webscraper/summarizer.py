@@ -88,6 +88,7 @@ def build_markdown_report(
     as_of: date,
     source_url: str,
     model_name: str | None = None,
+    fallback_reason: str | None = None,
 ) -> str:
     generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     front_matter_lines = [
@@ -102,10 +103,58 @@ def build_markdown_report(
     ]
     if model_name:
         front_matter_lines.append(f"ai_model: {model_name}")
+    if fallback_reason:
+        front_matter_lines.append("ai_fallback: true")
+        front_matter_lines.append(f'ai_fallback_reason: "{fallback_reason}"')
     front_matter_lines.extend(["---", ""])
     front_matter = "\n".join(front_matter_lines)
     heading = f"# Webex Contact Center Admin Updates — Last {days} Days (as of {as_of.strftime('%B %d, %Y')})"
     return f"{front_matter}{heading}\n\n{body.strip()}\n"
+
+
+def build_fallback_report(
+    features: list[ReleaseFeature],
+    *,
+    days: int,
+    as_of: date,
+    source_url: str,
+    reason: str,
+) -> str:
+    """Produce a structured markdown report when AI summarization is unavailable."""
+    lines = [
+        f"> **Note:** AI summarization was unavailable ({reason}). "
+        "Below is a structured listing of the scraped release notes.",
+        "",
+    ]
+
+    current_date: date | None = None
+    for feature in sorted(
+        features,
+        key=lambda item: (item.release_date, item.title),
+        reverse=True,
+    ):
+        if feature.release_date != current_date:
+            current_date = feature.release_date
+            lines.extend(["", f"## {current_date.strftime('%B %d, %Y')}", ""])
+        lines.extend([f"### {feature.title}", ""])
+        if feature.body_text.strip():
+            lines.append(feature.body_text.strip())
+            lines.append("")
+        if feature.links:
+            lines.append("**Links:**")
+            for label, url in feature.links:
+                lines.append(f"- [{label}]({url})")
+            lines.append("")
+
+    body = "\n".join(lines).strip()
+    return build_markdown_report(
+        body,
+        features=features,
+        days=days,
+        as_of=as_of,
+        source_url=source_url,
+        fallback_reason=reason,
+    )
 
 
 def _empty_report(*, days: int, as_of: date, source_url: str) -> str:

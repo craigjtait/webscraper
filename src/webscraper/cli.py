@@ -5,10 +5,16 @@ from typing import Optional
 import typer
 from dotenv import load_dotenv
 
+from webscraper.ai_client import AIServiceError, AITimeoutError
 from webscraper.fetcher import fetch_ui_data
 from webscraper.filter import filter_by_lookback
 from webscraper.parser import parse_release_features
-from webscraper.summarizer import build_markdown_report, summarize_features, write_report
+from webscraper.summarizer import (
+    build_fallback_report,
+    build_markdown_report,
+    summarize_features,
+    write_report,
+)
 
 DEFAULT_URL = (
     "https://help.webex.com/en-us/article/nv7abhz/"
@@ -73,12 +79,33 @@ def main(
         raise typer.Exit(code=0)
 
     if filtered:
-        report = summarize_features(
-            filtered,
-            days=days,
-            as_of=reference_date,
-            source_url=url,
-        )
+        try:
+            report = summarize_features(
+                filtered,
+                days=days,
+                as_of=reference_date,
+                source_url=url,
+            )
+        except AITimeoutError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+            typer.echo("Writing fallback report without AI summarization.")
+            report = build_fallback_report(
+                filtered,
+                days=days,
+                as_of=reference_date,
+                source_url=url,
+                reason="request timed out",
+            )
+        except AIServiceError as exc:
+            typer.secho(f"AI summarization failed: {exc}", fg=typer.colors.YELLOW, err=True)
+            typer.echo("Writing fallback report without AI summarization.")
+            report = build_fallback_report(
+                filtered,
+                days=days,
+                as_of=reference_date,
+                source_url=url,
+                reason=str(exc),
+            )
     else:
         report = build_markdown_report(
             f"No releases found in the last {days} days as of "
