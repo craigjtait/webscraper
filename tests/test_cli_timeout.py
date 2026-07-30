@@ -24,7 +24,7 @@ def test_cli_writes_fallback_report_on_ai_timeout(tmp_path: Path) -> None:
     )
     output_path = tmp_path / "report.md"
 
-    with patch("webscraper.cli.fetch_ui_data", return_value={}), patch(
+    with patch("webscraper.cli.fetch_article") as fetch_mock, patch(
         "webscraper.cli.parse_release_features",
         return_value=[feature],
     ), patch(
@@ -34,6 +34,13 @@ def test_cli_writes_fallback_report_on_ai_timeout(tmp_path: Path) -> None:
         "webscraper.cli.summarize_features",
         side_effect=AITimeoutError("The AI service did not respond in time."),
     ):
+        from webscraper.fetcher import ArticlePage
+
+        fetch_mock.return_value = ArticlePage(
+            title="What's new for administrators",
+            ui_data="<html></html>",
+            source_url="https://example.com",
+        )
         result = runner.invoke(
             app,
             ["--output", str(output_path), "--days", "30"],

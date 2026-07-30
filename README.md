@@ -1,6 +1,12 @@
 # webscraper
 
-Scrape Webex Contact Center administrator release notes, filter by a configurable lookback window, and summarize the results with AI into a Markdown report.
+Scrape Webex help article release notes, filter by a configurable lookback window, and summarize the results with AI into a Markdown report.
+
+Works with similarly structured pages such as:
+
+- [Webex Contact Center administrators](https://help.webex.com/en-us/article/nv7abhz/What's-new-for-administrators-in-Webex-Contact-Center)
+- [Control Hub](https://help.webex.com/en-us/article/u9dlxd/What's-new-in-Control-Hub)
+- [Webex Suite](https://help.webex.com/en-us/article/8dmbcr/What's-New-in-Webex-Suite)
 
 ## Setup
 
@@ -15,16 +21,17 @@ Set the AI credentials in `.env` before running summarization (see `.env.example
 
 ## Usage
 
-Scrape the default Webex admin "What's new" page and write a 30-day report:
+Scrape a Webex help article and write a 30-day report:
 
 ```bash
-python -m webscraper
+python -m webscraper --url "https://help.webex.com/en-us/article/u9dlxd/What's-new-in-Control-Hub"
 ```
 
 Common options:
 
 ```bash
 python -m webscraper \
+  --url "https://help.webex.com/en-us/article/8dmbcr/What's-New-in-Webex-Suite" \
   --days 7 \
   --as-of 2026-07-30 \
   --output output/report.md \
@@ -40,11 +47,15 @@ python -m webscraper \
 
 ## Output
 
-Reports are written to `output/webex-cc-admin-updates-{date}-last{days}d.md` by default and include YAML front matter plus Markdown grouped to match the source page:
+Reports are written to `output/{article-slug}-{date}-last{days}d.md` by default. The article title is read from the page metadata and used in the report heading and front matter.
 
-- `##` tab name (What's new, Coming soon, Limitations, Announcements)
-- `###` release date
+Markdown output mirrors the source page structure:
+
+- `##` tab name (What's new, Messaging, Announcements, etc.)
+- `###` release date or month (`July 24, 2026` or `July 2026`)
 - `####` feature title and summary bullets
+
+Month-only headings (for example `July 2026` or `July (46.7)`) are treated as month-level releases. They are included when that month overlaps the lookback window, so current-month items are returned even without a specific day.
 
 When AI summarization succeeds, the model is instructed to preserve this tab → date → feature structure. If AI is unavailable, the fallback report uses the same layout with scraped content.
 

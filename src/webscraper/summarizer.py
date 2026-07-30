@@ -6,7 +6,7 @@ from pathlib import Path
 
 from webscraper.ai_client import AIConfig, chat_completion
 from webscraper.filter import date_range_label
-from webscraper.models import ReleaseFeature
+from webscraper.models import DatePrecision, ReleaseFeature
 
 MAX_BODY_CHARS = 4000
 
@@ -21,48 +21,57 @@ def _tab_order(features: list[ReleaseFeature]) -> list[str]:
     return order
 
 
-def _format_date_heading(release_date: date) -> str:
+def _format_date_heading(release_date: date, *, precision: DatePrecision) -> str:
+    if precision == DatePrecision.MONTH:
+        return release_date.strftime("%B %Y")
     return release_date.strftime("%B %d, %Y")
 
 
 def _group_features_by_tab_and_date(
     features: list[ReleaseFeature],
-) -> list[tuple[str, list[tuple[date | None, list[ReleaseFeature]]]]]:
+) -> list[tuple[str, list[tuple[date | None, DatePrecision | None, list[ReleaseFeature]]]]]:
     """Group features by tab, then date (newest first within each tab)."""
     by_tab: dict[str, list[ReleaseFeature]] = defaultdict(list)
     for feature in features:
         by_tab[feature.tab_name].append(feature)
 
-    grouped: list[tuple[str, list[tuple[date | None, list[ReleaseFeature]]]]] = []
+    grouped: list[tuple[str, list[tuple[date | None, DatePrecision | None, list[ReleaseFeature]]]]] = []
     for tab_name in _tab_order(features):
         tab_features = by_tab[tab_name]
-        by_date: dict[date, list[ReleaseFeature]] = defaultdict(list)
+        by_period: dict[tuple[date, DatePrecision], list[ReleaseFeature]] = defaultdict(list)
         undated: list[ReleaseFeature] = []
 
         for feature in tab_features:
             if feature.is_dated:
-                by_date[feature.release_date].append(feature)
+                by_period[(feature.release_date, feature.date_precision)].append(feature)
             else:
                 undated.append(feature)
 
-        date_groups: list[tuple[date | None, list[ReleaseFeature]]] = []
-        for release_date in sorted(by_date.keys(), reverse=True):
-            date_groups.append((release_date, by_date[release_date]))
+        date_groups: list[tuple[date | None, DatePrecision | None, list[ReleaseFeature]]] = []
+        for (release_date, precision) in sorted(by_period.keys(), key=lambda item: item[0], reverse=True):
+            date_groups.append((release_date, precision, by_period[(release_date, precision)]))
         if undated:
-            date_groups.append((None, undated))
+            date_groups.append((None, None, undated))
 
         grouped.append((tab_name, date_groups))
     return grouped
 
 
-def _build_prompt(features: list[ReleaseFeature], *, days: int, as_of: date) -> str:
+def _build_prompt(
+    features: list[ReleaseFeature],
+    *,
+    page_title: str,
+    days: int,
+    as_of: date,
+) -> str:
     lines = [
-        "Summarize the following Webex Contact Center administrator release notes.",
+        f"Summarize the following Webex release notes from \"{page_title}\".",
         f"Only include features released in the last {days} days as of {as_of.isoformat()}.",
         "Requirements:",
-        "- Preserve the source page tab structure.",
-        "- Use Markdown headings: ## for tab names, ### for dates, #### for feature titles.",
-        "- Within each tab, group by release date, newest first.",
+        "- Preserve the source page tab structure (for example: What's new, Messaging, Announcements).",
+        "- Use Markdown headings: ## for tab names, ### for dates or months, #### for feature titles.",
+        "- Within each tab, group by release date or month, newest first.",
+        "- Month-only headings (for example, \"July 2026\") should remain month headings, not specific days.",
         "- Skip tabs that have no features in the lookback window.",
         "- Provide 1-3 concise bullet points per feature.",
         "- Consolidate duplicate themes without losing distinct capabilities.",
@@ -77,9 +86,10 @@ def _build_prompt(features: list[ReleaseFeature], *, days: int, as_of: date) -> 
 
     for tab_name, date_groups in _group_features_by_tab_and_date(features):
         lines.append(f"TAB: {tab_name}")
-        for release_date, tab_features in date_groups:
-            if release_date is not None:
-                lines.append(f"DATE: {release_date.isoformat()}")
+        for release_date, precision, tab_features in date_groups:
+            if release_date is not None and precision is not None:
+                label = _format_date_heading(release_date, precision=precision)
+                lines.append(f"DATE: {label}")
             for feature in tab_features:
                 body = feature.body_text
                 if len(body) > MAX_BODY_CHARS:
@@ -123,9 +133,14 @@ def render_grouped_markdown_body(
 
     for tab_name, date_groups in _group_features_by_tab_and_date(features):
         lines.extend(["", f"## {tab_name}", ""])
-        for release_date, tab_features in date_groups:
-            if release_date is not None:
-                lines.extend([f"### {_format_date_heading(release_date)}", ""])
+        for release_date, precision, tab_features in date_groups:
+            if release_date is not None and precision is not None:
+                lines.extend(
+                    [
+                        f"### {_format_date_heading(release_date, precision=precision)}",
+                        "",
+                    ]
+                )
                 feature_heading = "####"
             else:
                 feature_heading = "###"
@@ -139,13 +154,19 @@ def render_grouped_markdown_body(
 def summarize_features(
     features: list[ReleaseFeature],
     *,
+    page_title: str,
     days: int,
     as_of: date,
     source_url: str,
     ai_config: AIConfig | None = None,
 ) -> str:
     if not features:
-        return _empty_report(days=days, as_of=as_of, source_url=source_url)
+        return _empty_report(
+            page_title=page_title,
+            days=days,
+            as_of=as_of,
+            source_url=source_url,
+        )
 
     config = ai_config or AIConfig.from_env()
     summary = chat_completion(
@@ -153,16 +174,24 @@ def summarize_features(
             {
                 "role": "system",
                 "content": (
-                    "You are a technical writer summarizing product release notes for "
-                    "contact center administrators."
+                    "You are a technical writer summarizing Webex product release notes."
                 ),
             },
-            {"role": "user", "content": _build_prompt(features, days=days, as_of=as_of)},
+            {
+                "role": "user",
+                "content": _build_prompt(
+                    features,
+                    page_title=page_title,
+                    days=days,
+                    as_of=as_of,
+                ),
+            },
         ],
         config=config,
     )
     return build_markdown_report(
         summary.strip(),
+        page_title=page_title,
         features=features,
         days=days,
         as_of=as_of,
@@ -174,6 +203,7 @@ def summarize_features(
 def build_markdown_report(
     body: str,
     *,
+    page_title: str,
     features: list[ReleaseFeature],
     days: int,
     as_of: date,
@@ -185,7 +215,7 @@ def build_markdown_report(
     tab_names = _tab_order(features)
     front_matter_lines = [
         "---",
-        "title: Webex Contact Center Admin Updates",
+        f"title: {page_title}",
         f"source: {source_url}",
         f"lookback_days: {days}",
         f"as_of: {as_of.isoformat()}",
@@ -202,13 +232,17 @@ def build_markdown_report(
         front_matter_lines.append(f'ai_fallback_reason: "{fallback_reason}"')
     front_matter_lines.extend(["---", ""])
     front_matter = "\n".join(front_matter_lines)
-    heading = f"# Webex Contact Center Admin Updates — Last {days} Days (as of {as_of.strftime('%B %d, %Y')})"
+    heading = (
+        f"# {page_title} — Last {days} Days "
+        f"(as of {as_of.strftime('%B %d, %Y')})"
+    )
     return f"{front_matter}{heading}\n\n{body.strip()}\n"
 
 
 def build_fallback_report(
     features: list[ReleaseFeature],
     *,
+    page_title: str,
     days: int,
     as_of: date,
     source_url: str,
@@ -224,6 +258,7 @@ def build_fallback_report(
     )
     return build_markdown_report(
         body,
+        page_title=page_title,
         features=features,
         days=days,
         as_of=as_of,
@@ -232,13 +267,14 @@ def build_fallback_report(
     )
 
 
-def _empty_report(*, days: int, as_of: date, source_url: str) -> str:
+def _empty_report(*, page_title: str, days: int, as_of: date, source_url: str) -> str:
     body = (
         f"No releases found in the last {days} days as of "
         f"{as_of.strftime('%B %d, %Y')}."
     )
     return build_markdown_report(
         body,
+        page_title=page_title,
         features=[],
         days=days,
         as_of=as_of,

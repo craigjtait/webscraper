@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 DEFAULT_USER_AGENT = "webscraper/0.1.0 (+https://github.com/craigjtait/webscraper)"
+DEFAULT_PAGE_TITLE = "Webex Release Notes"
 NEXT_DATA_PATTERN = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
     re.DOTALL,
@@ -15,6 +17,13 @@ NEXT_DATA_PATTERN = re.compile(
 
 class FetchError(RuntimeError):
     """Raised when page content cannot be retrieved or parsed."""
+
+
+@dataclass(frozen=True)
+class ArticlePage:
+    title: str
+    ui_data: str
+    source_url: str
 
 
 def fetch_page_html(url: str, *, timeout: float = 30.0) -> str:
@@ -39,9 +48,18 @@ def extract_next_data(html: str) -> dict:
         raise FetchError("Could not parse __NEXT_DATA__ JSON") from exc
 
 
-def extract_ui_data(html: str) -> str:
-    """Extract article HTML embedded in Next.js page props."""
+def extract_article_title(html: str) -> str:
     page_props = extract_next_data(html).get("props", {}).get("pageProps", {})
+    data = page_props.get("data") or {}
+    for key in ("title", "englishTitle"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return DEFAULT_PAGE_TITLE
+
+
+def extract_ui_data_from_props(page_props: dict, html: str) -> str:
+    """Extract article HTML embedded in Next.js page props."""
     ui_data = page_props.get("UIData")
     if isinstance(ui_data, str) and ui_data.strip():
         return ui_data
@@ -52,6 +70,11 @@ def extract_ui_data(html: str) -> str:
         return extract_ui_data_from_content_html(fallback_html)
 
     raise FetchError("No UIData or contentUrl found in page props")
+
+
+def extract_ui_data(html: str) -> str:
+    page_props = extract_next_data(html).get("props", {}).get("pageProps", {})
+    return extract_ui_data_from_props(page_props, html)
 
 
 def extract_ui_data_from_content_html(html: str) -> str:
@@ -77,13 +100,13 @@ def save_cache(html: str, cache_path: Path) -> None:
     cache_path.write_text(html, encoding="utf-8")
 
 
-def fetch_ui_data(
+def fetch_article(
     url: str,
     *,
     cache_dir: Path | None = None,
     timeout: float = 30.0,
-) -> str:
-    """Fetch page HTML and return embedded article UIData HTML."""
+) -> ArticlePage:
+    """Fetch a help article and return its title plus embedded UIData HTML."""
     cache_path = cache_dir / "page.html" if cache_dir else None
     if cache_path and cache_path.is_file():
         html = load_cached_html(cache_path)
@@ -92,4 +115,17 @@ def fetch_ui_data(
         if cache_path:
             save_cache(html, cache_path)
 
-    return extract_ui_data(html)
+    page_props = extract_next_data(html).get("props", {}).get("pageProps", {})
+    title = extract_article_title(html)
+    ui_data = extract_ui_data_from_props(page_props, html)
+    return ArticlePage(title=title, ui_data=ui_data, source_url=url)
+
+
+def fetch_ui_data(
+    url: str,
+    *,
+    cache_dir: Path | None = None,
+    timeout: float = 30.0,
+) -> str:
+    """Fetch page HTML and return embedded article UIData HTML."""
+    return fetch_article(url, cache_dir=cache_dir, timeout=timeout).ui_data
